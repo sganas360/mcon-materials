@@ -36,7 +36,8 @@ import Foundation
 class SuperStorageModel: ObservableObject {
   /// The list of currently running downloads.
   @Published var downloads: [DownloadInfo] = []
-
+  @TaskLocal static var supportsPartialDownloads = false
+  
   /// Downloads a file and returns its content.
   func download(file: DownloadFile) async throws -> Data {
     guard let url = URL(string: "http://localhost:8080/files/download?\(file.name)") else {
@@ -62,22 +63,62 @@ class SuperStorageModel: ObservableObject {
       throw "Could not create the URL."
     }
     await addDownload(name: name)
-    return Data()
+    let result: (downloadStream: URLSession.AsyncBytes, response: URLResponse)
+    if let offset = offset {
+      let urlRequest = URLRequest(url: url, offset: offset, length: size)
+      result = try await URLSession.shared.bytes(for: urlRequest, delegate: nil)
+      guard (result.response as? HTTPURLResponse)?.statusCode == 206 else {
+        throw "The server responded with an error."
+      }
+    } else {
+      result = try await URLSession.shared.bytes(from: url)
+      guard (result.response as? HTTPURLResponse)?.statusCode == 200 else {
+        throw "The server responded with an error."
+      }
+    }
+    var asyncDownloadIterator = result.downloadStream.makeAsyncIterator()
+    var accumulator = ByteAccumulator(name: name, size: size)
+    
+    while await !stopDownloads, !accumulator.checkCompleted() {
+      while !accumulator.isBatchCompleted,
+            let byte = try await asyncDownloadIterator.next() {
+        accumulator.append(byte)
+      }
+      
+      let progress = accumulator.progress
+      Task.detached(priority: .medium) { [weak self] in
+        await self?.updateDownload(name: name, progress: progress)
+      }
+      print(accumulator.description)
+    }
+    return accumulator.data
   }
   
   /// Downloads a file using multiple concurrent connections, returns the final content, and updates the download progress.
   func multiDownloadWithProgress(file: DownloadFile) async throws -> Data {
-    func partInfo(index: Int, of count: Int) -> (offset: Int, size: Int, name: String) {
-      let standardPartSize = Int((Double(file.size) / Double(count)).rounded(.up))
+    func partInfo(index: Int, of standardPartSize: Int) -> (offset: Int, size: Int, name: String) {
       let partOffset = index * standardPartSize
       let partSize = min(standardPartSize, file.size - partOffset)
       let partName = "\(file.name) (part \(index + 1))"
       return (offset: partOffset, size: partSize, name: partName)
     }
     let total = 4
-    let parts = (0..<total).map { partInfo(index: $0, of: total) }
+    let standardPartSize = Int((Double(file.size) / Double(total)).rounded(.up))
+    let parts = (0..<total).map { partInfo(index: $0, of: standardPartSize) }
     // Add challenge code here.
-    return Data()
+    var result = [Data]()
+    try await withThrowingTaskGroup(of: Data.self) { group in
+      for part in parts {
+        group.addTask {
+          try await self.downloadWithProgress(fileName: file.name, name: part.name, size: part.size, offset: part.offset)
+        }
+      }
+      for try await data in group {
+        result.append(data)
+      }
+    }
+    return result
+      .reduce(Data(), +)
   }
   
   /// Flag that stops ongoing downloads.
@@ -120,7 +161,7 @@ extension SuperStorageModel {
     let downloadInfo = DownloadInfo(id: UUID(), name: name, progress: 0.0)
     downloads.append(downloadInfo)
   }
-
+  
   /// Updates a the progress of a given download.
   @MainActor func updateDownload(name: String, progress: Double) {
     if let index = downloads.firstIndex(where: { $0.name == name }) {

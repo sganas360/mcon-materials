@@ -32,6 +32,7 @@
 
 import SwiftUI
 import UIKit
+import Combine
 
 /// The file download view.
 struct DownloadView: View {
@@ -44,6 +45,27 @@ struct DownloadView: View {
   @State var isDownloadActive = false
 
   @State var duration = ""
+  @State var downloadTask: Task<Void, Error>? {
+    didSet {
+      timerTask?.cancel()
+      let startTime = Date().timeIntervalSince1970
+      let timerSequence = Timer
+        .publish(every: 1, tolerance: 1, on: .main, in: .common)
+        .autoconnect()
+        .map { date -> String in
+          let duration = Int(date.timeIntervalSince1970 - startTime)
+          return "\(duration)s"
+        }
+      // wraps the publisher in an AsyncSequence
+        .values
+      timerTask = Task {
+        for await duration in timerSequence {
+          self.duration = duration
+        }
+      }
+    }
+  }
+  @State var timerTask: Task<Void, Error>?
 
   var body: some View {
     List {
@@ -54,17 +76,34 @@ struct DownloadView: View {
         isDownloadActive: $isDownloadActive,
         downloadSingleAction: {
           // Download a file in a single go.
-          Task {
+          downloadTask = Task {
             defer { isDownloadActive = false }
             isDownloadActive = true
             fileData = try await model.download(file: file)
           }
         },
         downloadWithUpdatesAction: {
-          // Download a file with UI progress updates.
+          isDownloadActive = true
+          downloadTask = Task {
+            do {
+              try await SuperStorageModel
+                .$supportsPartialDownloads
+                .withValue(file.name.hasSuffix(".jpeg")) {
+                  fileData = try await model.downloadWithProgress(file: file)
+                }
+            } catch { }
+            isDownloadActive = false
+          }
         },
         downloadMultipleAction: {
           // Download a file in multiple concurrent parts.
+          isDownloadActive = true
+          downloadTask = Task {
+            do {
+              fileData = try await model.multiDownloadWithProgress(file: file)
+            } catch { }
+            isDownloadActive = false
+          }
         }
       )
       if !model.downloads.isEmpty {
@@ -87,9 +126,12 @@ struct DownloadView: View {
     .onDisappear {
       fileData = nil
       model.reset()
+      downloadTask?.cancel()
     }
     .toolbar {
       Button(action: {
+        model.stopDownloads = true
+        timerTask?.cancel()
       }, label: { Text("Cancel All") })
         .disabled(model.downloads.isEmpty)
     }
