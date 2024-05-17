@@ -89,7 +89,7 @@ struct ChatView: View {
             do {
               let countdownMessage = message
               message = ""
-              try await model.countdown(to: countdownMessage)
+              try await model.countdownUnfolding(to: countdownMessage)
             } catch {
               lastErrorMessage = error.localizedDescription
             }
