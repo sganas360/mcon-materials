@@ -44,22 +44,49 @@ guard let username = CommandLine.arguments.dropFirst().first else {
   exit(1)
 }
 
-Task {
-  let url = URL(string: "http://localhost:8080/cli/chat?\(username)")!
-  do {
-    // Loop over the server response lines and print them.
-    
-  } catch {
-    print(error.localizedDescription)
-    exit(1)
-  }
+if #available(iOS 13.0, *) {
+    Task {
+        let url = URL(string: "http://localhost:8080/cli/chat?\(username)")!
+        do {
+            // Loop over the server response lines and print them.
+            if #available(iOS 15.0, *) {
+                do {
+                    let (stream, response) = try await liveURLSession.bytes(from: url, delegate: nil)
+                    for try await line in stream.lines {
+                        print("You are in first task")
+                        print(line)
+                    }
+                } catch {
+                    print(error.localizedDescription)
+                    exit(1)
+                }
+
+            } else {
+                // Fallback on earlier versions
+                return
+            }
+    }
 }
 
-Task {
-  let url = URL(string: "http://localhost:8080/cli/say")!
-  
-  // Loop over the lines in the standard input and send them to the server.
-  
-}
+
+    Task {
+        let url = URL(string: "http://localhost:8080/cli/say")!
+        
+        // Loop over the lines in the standard input and send them to the server.
+        for try await line in FileHandle.standardInput.bytes.lines {
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            request.httpBody = "[\(username)] \(line)".data(using: .utf8)
+            
+            do {
+                print("You are in second task")
+                _ = try await URLSession.shared.data(for: request, delegate: nil)
+            } catch {
+                print(error.localizedDescription)
+                exit(1)
+            }
+        }
+    }
+} 
 
 RunLoop.main.run()
