@@ -34,4 +34,60 @@ import XCTest
 @testable import Blabber
 
 class BlabberTests: XCTestCase {
+  @MainActor
+  let model: BlabberModel = {
+      let model = BlabberModel()
+      model.username = "test-user"
+      
+      let testConfiguration = URLSessionConfiguration.default
+      testConfiguration.protocolClasses = [TestURLProtocol.self]
+      
+      model.urlSession = URLSession(configuration: testConfiguration)
+      model.sleep = { try await Task.sleep(for: .nanoseconds($0)) }
+      return model
+    }()
+  
+  func testModelSay() async throws {
+    try await model.say("Hello!")
+    
+    // Verify last request was sent to the correct url
+    let request = try XCTUnwrap(TestURLProtocol.lastRequest)
+    XCTAssertEqual(request.url?.absoluteString, "http://localhost:8080/chat/say")
+    
+    // Verify right data is being sent
+    let httpBody = try XCTUnwrap(request.httpBody)
+    let message = try XCTUnwrap(try? JSONDecoder()
+      .decode(Message.self, from: httpBody))
+    XCTAssertEqual(message.message, "Hello!")
+  }
+  
+  func testModelCountdown() async throws {
+//    try await model.countdown(to: "Tada!")
+//    try await TimeoutTask(seconds: 10) {
+//      for await request in TestURLProtocol.requests {
+//        print(request)
+//      }
+//    }
+//    .value
+    
+    async let countdown: Void = model.countdown(to: "Tada!")
+    async let messages = TimeoutTask(seconds: 10) {
+      await TestURLProtocol.requests
+        .prefix(4)
+        .reduce(into: []) { partialResult, request in
+          partialResult.append(request)
+        }
+        .compactMap(\.httpBody)
+        .compactMap { data in
+          try? JSONDecoder()
+            .decode(Message.self, from: data)
+            .message
+        }
+    }.value
+    let (messagesResult, _) = try await (messages, countdown)
+    XCTAssertEqual(
+    ["3...", "2...", "1...", "🎉 Tada!"], messagesResult
+    )
+  }
+  
 }

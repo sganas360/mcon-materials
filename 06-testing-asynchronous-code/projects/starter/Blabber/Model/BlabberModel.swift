@@ -42,7 +42,10 @@ class BlabberModel: ObservableObject {
   var urlSession = URLSession.shared
   private let manager = CLLocationManager()
   private var delegate: ChatLocationDelegate?
-
+  
+  var sleep: (Int) async throws -> Void = {
+    try await Task.sleep(for: .seconds($0))
+  }
   nonisolated init() {
   }
 
@@ -82,12 +85,13 @@ class BlabberModel: ObservableObject {
 
   /// Does a countdown and sends the message.
   func countdown(to message: String) async throws {
+    let sleep = self.sleep
     guard !message.isEmpty else { return }
     var countdown = 3
     let counter = AsyncStream<String> {
       guard countdown >= 0 else { return nil }
       do {
-        try await Task.sleep(for: .seconds(1))
+        try await sleep(1)
       } catch {
         return nil
       }
