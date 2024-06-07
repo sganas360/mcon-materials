@@ -69,6 +69,10 @@ struct LoadingView: View {
       Task {
         do {
           try await model.loadImages()
+          try await model.verifyImages()
+          withAnimation {
+            isVerified = true
+          }
         } catch {
           lastErrorMessage = error.localizedDescription
         }
@@ -78,6 +82,14 @@ struct LoadingView: View {
       Button("Close", role: .cancel) { }
     }, message: {
       Text(lastErrorMessage)
+    })
+    .onReceive(timer, perform: { _ in
+      guard !model.imageFeed.isEmpty else {
+        return
+      }
+      Task {
+        progress = await Double(model.verifiedCount) / Double(model.imageFeed.count)
+      }
     })
   }
 }

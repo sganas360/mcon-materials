@@ -1,4 +1,4 @@
-/// Copyright (c) 2021 Razeware LLC
+/// Copyright (c) 2024 Razeware LLC
 /// 
 /// Permission is hereby granted, free of charge, to any person obtaining a copy
 /// of this software and associated documentation files (the "Software"), to deal
@@ -30,41 +30,58 @@
 /// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 /// THE SOFTWARE.
 
-import SwiftUI
+import Foundation
+import UIKit
 
-struct DetailsView: View {
-  let file: ImageFile
-  @State var image: UIImage?
-  @EnvironmentObject var imageLoader: ImageLoader
-
-  var body: some View {
-    ZStack(alignment: .bottom) {
-      if let image = image {
-        Image(uiImage: image)
-          .resizable()
-          .aspectRatio(contentMode: .fill)
-      } else {
-        Text("No preview available")
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-          .foregroundColor(.white)
-          .background(Color(.sRGB, white: 0.2, opacity: 1))
+//Although ImageLoader does not feature published properties, SwiftUI requires conformance
+// to ObservableObject to be an environment object
+actor ImageLoader: ObservableObject {
+  enum DownloadState {
+    case inProgress(Task<UIImage, Error>)
+    case completed(UIImage)
+    case failed
+  }
+  
+  private(set) var cache: [String: DownloadState] = [:]
+  
+  func add(_ image: UIImage, forKey key: String) {
+    cache[key] = .completed(image)
+  }
+  
+  func clear() {
+    cache.removeAll()
+  }
+  
+  func image(_ serverPath: String) async throws -> UIImage {
+    if let cached = cache[serverPath] {
+      switch cached {
+      case.completed(let image):
+        return image
+      case .inProgress(let task):
+        return try await task.value
+      case .failed:
+        throw "Download failed"
       }
-      VStack(alignment: .center) {
-        Text(file.name)
-          .font(.custom("YoungSerif-Regular", size: 28))
-
-        Text(String(format: "$%.2f", file.price))
-          .font(.custom("YoungSerif-Regular", size: 21))
-          .background(.pink)
-          .foregroundColor(.white)
-      }
-      .padding(.vertical, 40)
-      .clipped()
+      
     }
-    .ignoresSafeArea()
-    .foregroundColor(.white)
-    .task {
-      image = try? await imageLoader.image(file.url)
+    let download: Task<UIImage, Error> = Task.detached {
+      guard let url = URL(string: "http://localhost:8080".appending(serverPath))
+      else {
+        throw "Could not create the download URL"
+      }
+      print("Download: \(url.absoluteString)")
+      let data = try await URLSession.shared.data(from: url).0
+      return try resize(data, to: CGSize(width: 200, height: 200))
+    }
+    cache[serverPath] = .inProgress(download)
+    
+    do {
+      let result = try await download.value
+      add(result, forKey: serverPath)
+      return result
+    } catch {
+      cache[serverPath] = .failed
+      throw error
     }
   }
 }
